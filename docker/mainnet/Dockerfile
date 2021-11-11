@@ -45,8 +45,9 @@ USER safeuser
 
 # Clone the repository
 WORKDIR /home/safeuser
-RUN git clone https://github.com/Permissionless-Software-Foundation/bch-api
+RUN git clone https://github.com/FullStack-cash/bch-api
 WORKDIR /home/safeuser/bch-api
+RUN git checkout production
 RUN npm install --silent
 
 # Generate documentation
