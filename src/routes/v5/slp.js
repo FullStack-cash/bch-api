@@ -418,9 +418,8 @@ class Slp {
             },
             {
               $match: {
-                'graphTxn.outputs.address': _this.bchjs.SLP.Address.toSLPAddress(
-                  address
-                ),
+                'graphTxn.outputs.address':
+                  _this.bchjs.SLP.Address.toSLPAddress(address),
                 'graphTxn.outputs.status': 'UNSPENT',
                 'graphTxn.outputs.slpAmount': { $gte: 0 }
               }
@@ -631,9 +630,8 @@ class Slp {
               },
               {
                 $match: {
-                  'graphTxn.outputs.address': _this.bchjs.SLP.Address.toSLPAddress(
-                    address
-                  ),
+                  'graphTxn.outputs.address':
+                    _this.bchjs.SLP.Address.toSLPAddress(address),
                   'graphTxn.outputs.status': 'UNSPENT',
                   'graphTxn.outputs.slpAmount': { $gte: 0 }
                 }
@@ -1753,14 +1751,14 @@ class Slp {
     const password = SLPDB_PASS_GP
     const combined = `${username}:${password}`
     // console.log(`combined: ${combined}`)
-    var base64Credential = Buffer.from(combined).toString('base64')
-    var readyCredential = `Basic ${base64Credential}`
+    const base64Credential = Buffer.from(combined).toString('base64')
+    const readyCredential = `Basic ${base64Credential}`
 
     const options = {
       headers: {
         authorization: readyCredential
       },
-      timeout: 15000
+      timeout: 45000
     }
 
     return options
@@ -1773,8 +1771,8 @@ class Slp {
     const password = SLPDB_PASS_WL
     const combined = `${username}:${password}`
     // console.log(`combined: ${combined}`)
-    var base64Credential = Buffer.from(combined).toString('base64')
-    var readyCredential = `Basic ${base64Credential}`
+    const base64Credential = Buffer.from(combined).toString('base64')
+    const readyCredential = `Basic ${base64Credential}`
 
     const options = {
       headers: {
@@ -1803,6 +1801,7 @@ class Slp {
     tokenOutputs.map((x) => {
       const string = parseFloat(x.amount) * 100000000
       sendOutputs.push(string.toString())
+      return 1 // Making the linter happy
     })
 
     // Because you are not using Insight API indexer, you do not get the
