@@ -33,6 +33,10 @@ const { RateLimiterRedis } = require('rate-limiter-flexible')
 const wlogger = require('../util/winston-logging')
 const config = require('../../config')
 
+// The amount of delay in milliseconds to add to anonymous requests, in order
+// to slow down freeloaders that are hitting the system too hard.
+const ANON_DELAY = 3000
+
 let _this // Global pointer to instance of class, when 'this' context is lost.
 
 // Setup Redis to track rate limits for each user.
@@ -213,6 +217,10 @@ class RateLimits {
     next()
   }
 
+  sleep (ms) {
+    return new Promise(resolve => setTimeout(resolve, ms))
+  }
+
   // A wrapper for Redis-based rate limiter.
   // Will return false if the user has not exceeded the rate limit. Otherwise
   // it will return the 'res' object with an error status and message, which
@@ -267,6 +275,11 @@ class RateLimits {
 
       res.locals.pointsToConsume = pointsToConsume // Feedback for tests.
 
+      // Add artificial delay to slow down freeloaders.
+      if (pointsToConsume === ANON_LIMITS) {
+        await this.sleep(ANON_DELAY)
+      }
+
       // Signal that the user has not exceeded their rate limits.
       return false
     } catch (err) {
@@ -289,6 +302,11 @@ class RateLimits {
         status: 429
       }
       wlogger.info(logData)
+
+      // Add artificial delay to slow down freeloaders.
+      if (pointsToConsume === ANON_LIMITS) {
+        await this.sleep(ANON_DELAY)
+      }
 
       // Rate limited was triggered
       res.status(429) // https://github.com/Bitcoin-com/rest.bitcoin.com/issues/330

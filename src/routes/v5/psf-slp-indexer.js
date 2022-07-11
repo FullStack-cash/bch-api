@@ -7,17 +7,14 @@ const express = require('express')
 const router = express.Router()
 const axios = require('axios')
 const util = require('util')
+const BCHJS = require('@psf/bch-js')
 
 // Local libraries
 const RouteUtils = require('../../util/route-utils')
-const routeUtils = new RouteUtils()
-
-const BCHJS = require('@psf/bch-js')
-const bchjs = new BCHJS()
-
-// Local libraries
-// const wlogger = require('../../../util/winston-logging')
 const config = require('../../../config')
+
+const routeUtils = new RouteUtils()
+const bchjs = new BCHJS({ restURL: config.restURL })
 
 let _this
 
@@ -35,6 +32,7 @@ class PsfSlpIndexer {
     this.router.post('/address', this.getAddress)
     this.router.post('/txid', this.getTxid)
     this.router.post('/token', this.getTokenStats)
+    this.router.post('/token/data', this.getTokenData)
 
     _this = this
   }
@@ -99,27 +97,29 @@ class PsfSlpIndexer {
         })
       }
 
-      // Ensure the input is a valid BCH address.
-      try {
-        _this.bchjs.SLP.Address.toCashAddress(address)
-      } catch (err) {
-        res.status(400)
-        return res.json({
-          success: false,
-          error: `Invalid BCH address. Double check your address is valid: ${address}`
-        })
-      }
+      if (!address.includes('ecash')) {
+        // Ensure the input is a valid BCH address.
+        try {
+          _this.bchjs.SLP.Address.toCashAddress(address)
+        } catch (err) {
+          res.status(400)
+          return res.json({
+            success: false,
+            error: `Invalid BCH address. Double check your address is valid: ${address}`
+          })
+        }
 
-      // Prevent a common user error. Ensure they are using the correct network address.
-      const cashAddr = _this.bchjs.SLP.Address.toCashAddress(address)
-      const networkIsValid = _this.routeUtils.validateNetwork(cashAddr)
-      if (!networkIsValid) {
-        res.status(400)
-        return res.json({
-          success: false,
-          error:
-            'Invalid network. Trying to use a testnet address on mainnet, or vice versa.'
-        })
+        // Prevent a common user error. Ensure they are using the correct network address.
+        const cashAddr = _this.bchjs.SLP.Address.toCashAddress(address)
+        const networkIsValid = _this.routeUtils.validateNetwork(cashAddr)
+        if (!networkIsValid) {
+          res.status(400)
+          return res.json({
+            success: false,
+            error:
+              'Invalid network. Trying to use a testnet address on mainnet, or vice versa.'
+          })
+        }
       }
 
       const response = await _this.axios.post(
@@ -221,6 +221,219 @@ class PsfSlpIndexer {
       return res.json(response.data)
     } catch (err) {
       return _this.errorHandler(err, res)
+    }
+  }
+
+  /**
+   * @api {post} /psf/slp/token/data  Get token data
+   * @apiName Get token data
+   * @apiGroup PSF SLP
+   * @apiDescription Get mutable and immutable data if the token contains them.
+   *
+   *
+   * @apiExample Example usage:
+   * curl -H "Content-Type: application/json" -X POST -d '{ "tokenId": "f055256b938f1ecfa270459d6f12c7c8c82b66d3263c03d5074445a2b1a498a3" }' localhost:3000/v5/psf/slp/token/data
+   *
+   *
+   */
+  // Get mutable and immutable data for a token, if the token was created with
+  // such data.
+  //
+  // Example:
+  // curl -H "Content-Type: application/json" -X POST -d '{ "tokenId": "f055256b938f1ecfa270459d6f12c7c8c82b66d3263c03d5074445a2b1a498a3" }' localhost:3000/v5/psf/slp/token/data
+  async getTokenData (req, res, next) {
+    try {
+      // Verify env var is set for interacting with the indexer.
+      _this.checkEnvVar()
+      const tokenData = {}
+
+      const tokenId = req.body.tokenId
+      if (!tokenId || tokenId === '') {
+        res.status(400)
+        return res.json({
+          success: false,
+          error: 'tokenId can not be empty'
+        })
+      }
+
+      // get token stats from the Genesis TX of the token.
+      const withTxHistory = false
+      const response = await _this.axios.post(
+        `${_this.psfSlpIndexerApi}slp/token/`,
+        { tokenId, withTxHistory }
+      )
+      // console.log('response', response.data)
+
+      const tokenStats = response.data.tokenData
+
+      tokenData.genesisData = tokenStats
+
+      // try to get immutable data
+      try {
+        // const immutableData = await _this.getCIDData(tokenStats.documentUri)
+        const immutableData = tokenStats.documentUri
+        tokenData.immutableData = immutableData
+      } catch (error) {
+        tokenData.immutableData = ''
+      }
+
+      // try to get mutable data
+      try {
+        const mutableData = await _this.getMutableData(tokenStats.documentHash)
+        tokenData.mutableData = mutableData
+      } catch (error) {
+        tokenData.mutableData = ''
+      }
+
+      res.status(200)
+      return res.json(tokenData)
+    } catch (err) {
+      console.log('Error in getTokenData(): ', err)
+      return _this.errorHandler(err, res)
+    }
+  }
+
+  // Retrieves the mutable data associated with a token document hash.
+  async getMutableData (documentHash) {
+    try {
+      if (!documentHash || typeof documentHash !== 'string') {
+        throw new Error(
+          'documentHash string required when calling mutableData().'
+        )
+      }
+
+      // Get the OP_RETURN data and decode it.
+      const mutableData = await _this.decodeOpReturn(documentHash)
+      const jsonData = JSON.parse(mutableData)
+      // console.log(`jsonData: ${JSON.stringify(jsonData, null, 2)}`)
+
+      const mutableDataAddr = jsonData.mda
+
+      // Gets the mutable data address (MDA) transaction history.
+      const transactions = await _this.bchjs.Electrumx.transactions(mutableDataAddr)
+
+      const mdaTxs = transactions.transactions
+      // console.log(`mdaTxs: ${JSON.stringify(mdaTxs, null, 2)}`)
+
+      let data = false
+      // Maps each transaction of the mutableDataAddr.
+      // If it finds an OP_RETURN, decode it. Exit the loop once the first
+      // valid mutable data entry is found.
+      // Start with the newest TXID entry and scan the history to find the first
+      // entry with an IPFS CID.
+      for (let i = mdaTxs.length - 1; i > -1; i--) {
+        const tx = mdaTxs[i]
+        const txid = tx.tx_hash
+        console.log(`Retrieving and decoding txid ${txid}`)
+
+        data = await _this.decodeOpReturn(txid)
+        // console.log('data: ', data)
+
+        //  Try parse the OP_RETURN data to a JSON object.
+        if (data) {
+          try {
+            // console.log('Mutable Data  : ', data)
+
+            // Convert the OP_RETURN data to a JSON object.
+            const obj = JSON.parse(data)
+            console.log(`obj: ${JSON.stringify(obj, null, 2)}`)
+
+            // Keep searching if this TX does not have a cid value.
+            if (!obj.cid) continue
+
+            // Ensure data was generated by the MDA
+            const txData = await this.bchjs.Transaction.get(txid)
+            const vinAddress = txData.txData.vin[0].address
+
+            // Skip entry if it was not made by the MDA private key.
+            if (mutableDataAddr !== vinAddress) {
+              console.log('Data is not generated by MDA, skipping.')
+              data = false
+              continue
+            }
+
+            break
+          } catch (error) {
+            continue
+          }
+        }
+      }
+      if (!data) {
+        console.log('Mutable Data  Not found ')
+      }
+
+      // Get the CID:
+      const obj = JSON.parse(data)
+      const cid = obj.cid
+      if (!cid) {
+        throw new Error('CID could not be found in OP_RETURN data')
+      }
+      const result = cid
+
+      // const result = await _this.getCIDData(cid)
+      // console.log(`response.data: ${JSON.stringify(response.data, null, 2)}`)
+
+      return result
+    } catch (err) {
+      // console.log('Error in getMutableData().')
+      console.log('Error in getMutableData(): ', err)
+      throw err
+    }
+  }
+
+  // Decodes the OP_RETURN of a transaction if this exists
+  async decodeOpReturn (txid) {
+    try {
+      if (!txid || typeof txid !== 'string') {
+        throw new Error('txid must be a string.')
+      }
+
+      // get transaction data
+      const txData = await _this.bchjs.Electrumx.txData(txid)
+      let data = false
+
+      // Maps the vout of the transaction in search of an OP_RETURN
+      for (let i = 0; i < txData.details.vout.length; i++) {
+        const vout = txData.details.vout[i]
+
+        const script = _this.bchjs.Script.toASM(
+          Buffer.from(vout.scriptPubKey.hex, 'hex')
+        ).split(' ')
+
+        // Exit on the first OP_RETURN found.
+        if (script[0] === 'OP_RETURN') {
+          data = Buffer.from(script[1], 'hex').toString('ascii')
+          break
+        }
+      }
+
+      return data
+    } catch (error) {
+      console.log('Error in decodeOpReturn().')
+      throw error
+    }
+  }
+
+  // Get the immutable data stored in the documentUrl field of the token.
+  async getCIDData (cid) {
+    try {
+      if (!cid || typeof cid !== 'string') {
+        throw new Error('cid must be a string.')
+      }
+
+      // Assuming that CID starts with ipfs://. Cutting out that prefix.
+      cid = cid.substring(7)
+
+      const dataUrl = `https://${cid}.ipfs.dweb.link/data.json`
+      console.log(`dataUrl: ${dataUrl}`)
+
+      const response = await _this.axios.get(dataUrl)
+      // console.log(`response.data: ${JSON.stringify(response.data, null, 2)}`)
+
+      return response.data
+    } catch (error) {
+      console.log('Error in getCIDData(): ', error)
+      throw error
     }
   }
 
